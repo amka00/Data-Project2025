@@ -1,0 +1,12 @@
+# Data
+data/raw/
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+
+# Notebooks
+.ipynb_checkpoints/
+
+
