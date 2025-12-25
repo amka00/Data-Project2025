@@ -1,3 +1,29 @@
-MLenv
-__pycache__
-dataset
+  GNU nano 8.7                                  .gitignore
+# Data
+data/raw/
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+
+# Notebooks
+.ipynb_checkpoints/
+
+
+
+# Data
+data/
+data/raw/
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Temporary files
+DELETELATER/
+
