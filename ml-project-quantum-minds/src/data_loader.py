@@ -289,6 +289,8 @@ def load_and_preprocess(
 
     var_desc = parse_variable_descriptions(variable_description_path)
 
+    print("Variable description path:", variable_description_path)
+
     x_train_exp = expand_dataset(x_train, var_desc)
     x_test_exp = expand_dataset(x_test, var_desc)
 
