@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import numpy as np
+import matplotlib.pyplot as plt
+
 
 from src.data_loader import load_and_preprocess
 from src.models import make_model
