@@ -3,7 +3,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Callable, Optional, Tuple, Any
+from abc import ABC, abstractmethod
 import numpy as np
+
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from numba import jit
+from sklearn.neural_network import MLPClassifier
+
+
 
 
 # ============================================================
@@ -234,13 +242,48 @@ def reg_logistic_regression(
     # match your original: report unregularized logistic loss
     return w, _logistic_loss(y01, tx, w)
 
+# ============================================================
+# HPC / Numba Optimized Functions
+# ============================================================
+
+@jit(nopython=True, cache=True)
+def _sigmoid_numba(t: np.ndarray) -> np.ndarray:
+    """
+    Numba-optimized sigmoid function.
+    Compiled to machine code for maximum performance.
+    """
+    # Clip values to prevent overflow, compatible with Numba
+    t = np.minimum(np.maximum(t, -500), 500)
+    return 1.0 / (1.0 + np.exp(-t))
+
+@jit(nopython=True, cache=True)
+def _grad_descent_numba(y: np.ndarray, tx: np.ndarray, w: np.ndarray, 
+                        lambda_: float, gamma: float, max_iters: int) -> np.ndarray:
+    """
+    Gradient Descent loop compiled with Numba JIT (Just-In-Time).
+    Replaces the slow Python loop with optimized C-like machine code.
+    """
+    n = len(y)
+    for _ in range(max_iters):
+        z = tx @ w
+        pred = 1.0 / (1.0 + np.exp(-z)) # Inline sigmoid for performance
+        
+        # Compute gradient with L2 penalty
+        err = pred - y
+        grad = (tx.T @ err) / n + 2.0 * lambda_ * w
+        
+        # Update weights
+        w -= gamma * grad
+        
+    return w
+
 
 # ============================================================
 # Class-based API (for clean model comparison in main.py)
 # ============================================================
 
 @dataclass
-class BaseModel:
+class BaseModel(ABC):
     """
     Minimal interface for model comparison.
     """
@@ -248,12 +291,13 @@ class BaseModel:
     w: Optional[np.ndarray] = None
 
     def _prep_x(self, x: np.ndarray) -> np.ndarray:
-        x = np.asarray(x, dtype=float)
-        return _add_intercept(x) if self.add_intercept else x
+        if not self.add_intercept: return x
+        return np.c_[np.ones((x.shape[0], 1)), x]
 
+    @abstractmethod
     def fit(self, x: np.ndarray, y: np.ndarray) -> "BaseModel":
         raise NotImplementedError
-
+    @abstractmethod
     def predict(self, x: np.ndarray) -> np.ndarray:
         raise NotImplementedError
 
@@ -353,15 +397,125 @@ class LogisticRegressionGDModel(BaseModel):
 
 @dataclass
 class RegLogisticRegressionGDModel(LogisticRegressionGDModel):
-    lambda_: float = 1e-6
+    lambda_: float = 1e-2
+    max_iters: int = 300
+    gamma: float = 0.1
 
     def fit(self, x: np.ndarray, y: np.ndarray) -> "RegLogisticRegressionGDModel":
-        tx = self._prep_x(x)
-        y01 = _to_zero_one(y)
-        d = tx.shape[1]
-        w0 = np.zeros(d)
-        self.w, _ = reg_logistic_regression(y01, tx, self.lambda_, w0, self.max_iters, self.gamma)
+        # Ensure float64 type for Numba compatibility
+        tx = self._prep_x(x).astype(np.float64)
+        
+        # Convert labels {-1, 1} to {0, 1} and cast to float64
+        y_01 = ((y + 1) / 2).astype(np.float64) if np.any(y == -1) else y.astype(np.float64)
+        
+        w0 = np.zeros(tx.shape[1], dtype=np.float64)
+        
+        # Call the JIT-compiled kernel (HPC)
+        self.w = _grad_descent_numba(y_01, tx, w0, self.lambda_, self.gamma, self.max_iters)
         return self
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        if self.w is None: 
+            raise RuntimeError("Model not trained")
+            
+        tx = self._prep_x(x).astype(np.float64)
+        # Use the Numba-optimized sigmoid
+        prob = _sigmoid_numba(tx @ self.w)
+        return np.where(prob >= 0.5, 1, -1)
+
+
+@dataclass
+class RandomForestModel(BaseModel):
+    n_estimators: int = 100
+    max_depth: Optional[int] = None
+    random_state: int = 0
+    # Random Forest does not require a bias/intercept column
+    add_intercept: bool = False 
+    clf: Optional[RandomForestClassifier] = None
+
+    def fit(self, x: np.ndarray, y: np.ndarray) -> "RandomForestModel":
+        # Scikit-learn natively handles {-1, 1} labels, no conversion needed
+        # We assume self._prep_x handles the intercept logic (returns x as-is because add_intercept is False)
+        tx = self._prep_x(x)
+        
+        self.clf = RandomForestClassifier(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            random_state=self.random_state,
+            n_jobs=-1 # Use all available CPU cores for performance
+        )
+        self.clf.fit(tx, y)
+        return self
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        if self.clf is None:
+            raise RuntimeError("Model has not been trained yet.")
+        tx = self._prep_x(x)
+        return self.clf.predict(tx)
+    
+@dataclass
+class XGBoostModel(BaseModel):
+    n_estimators: int = 100
+    max_depth: int = 6
+    learning_rate: float = 0.1
+    random_state: int = 0
+    add_intercept: bool = False
+    clf: Optional[XGBClassifier] = None
+
+    def fit(self, x: np.ndarray, y: np.ndarray) -> "XGBoostModel":
+        # Map labels from {-1, 1} to {0, 1} for XGBoost
+        y_mapped = np.where(y == -1, 0, 1)
+
+        self.clf = XGBClassifier(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            random_state=self.random_state,
+            use_label_encoder=False,
+            eval_metric='logloss',
+            n_jobs=-1
+        )
+        self.clf.fit(x, y_mapped)
+        return self
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        if self.clf is None:
+            raise RuntimeError("Model not trained.")
+        # Predict 0/1 and map back to -1/1
+        pred_01 = self.clf.predict(x)
+        return np.where(pred_01 == 0, -1, 1)
+    
+
+@dataclass
+class NeuralNetModel(BaseModel):
+    """
+    Week 10: Deep Learning / Multi-Layer Perceptron.
+    """
+    hidden_layer_sizes: Tuple[int, ...] = (100, 50)
+    activation: str = 'relu'
+    learning_rate_init: float = 0.001
+    max_iter: int = 200
+    random_state: int = 43504
+    add_intercept: bool = False
+    clf: Optional[MLPClassifier] = None
+
+    def fit(self, x: np.ndarray, y: np.ndarray) -> "NeuralNetModel":
+        # Scikit-learn requires {0, 1} or {-1, 1} (it handles mapping automatically)
+        self.clf = MLPClassifier(
+            hidden_layer_sizes=self.hidden_layer_sizes,
+            activation=self.activation,
+            learning_rate_init=self.learning_rate_init,
+            max_iter=self.max_iter,
+            random_state=self.random_state,
+            early_stopping=True, # Prevents overfitting (Week 10/11)
+            validation_fraction=0.1
+        )
+        self.clf.fit(x, y)
+        return self
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        if self.clf is None: raise RuntimeError("Model not trained.")
+        return self.clf.predict(x)
 
 
 # ============================================================
@@ -375,6 +529,9 @@ MODEL_REGISTRY: Dict[str, Callable[..., BaseModel]] = {
     "mse_sgd": MSESGDModel,
     "logreg_gd": LogisticRegressionGDModel,
     "reg_logreg_gd": RegLogisticRegressionGDModel,
+    "random_forest": RandomForestModel,
+    "xgboost": XGBoostModel,
+    "neural_net": NeuralNetModel,
 }
 
 

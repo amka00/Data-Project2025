@@ -51,7 +51,7 @@ def _resolve_data_paths():
 
 def main():
     # ---------------------------
-    # Config (edit here)
+    # Config
     # ---------------------------
     RANDOM_SEED = 43504
     TRAIN_SPLIT_RATIO = 0.90
@@ -85,7 +85,7 @@ def main():
 
     # ---------------------------
     # Define model candidates
-    # (easy to extend later with xgboost/trees/rf)
+    # (easy to extend later with xgboost/trees/random_forest)
     # ---------------------------
     model_specs = {
         "ridge(lambda=1e-2)": lambda: make_model("ridge", lambda_=1e-2),
@@ -94,6 +94,31 @@ def main():
         "logreg_gd(it=300,g=0.1)": lambda: make_model("logreg_gd", max_iters=300, gamma=0.1),
         "reg_logreg_gd(l=1e-2,it=300,g=0.1)": lambda: make_model("reg_logreg_gd", lambda_=1e-2, max_iters=300, gamma=0.1),
         "least_squares": lambda: make_model("least_squares"),
+        "reg_logreg_numba": lambda: make_model(
+            "reg_logreg_gd", 
+            lambda_=0.01, 
+            max_iters=300, 
+            gamma=0.1
+        ),
+        "random_forest(n=100,d=15)": lambda: make_model(
+            "random_forest", 
+            n_estimators=100, 
+            max_depth=15, 
+            random_state=RANDOM_SEED
+            ),
+        "xgboost(n=100,d=6,lr=0.1)": lambda: make_model(
+            "xgboost",
+            n_estimators=100,
+            max_depth=6,
+            learning_rate=0.1,
+            random_state=RANDOM_SEED
+        ),
+        "neural_net": lambda: make_model(
+            "neural_net",
+            hidden_layer_sizes=(100, 50),
+            learning_rate_init=0.001,
+            max_iter=300
+        ),
     }
 
     # ---------------------------
