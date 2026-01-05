@@ -159,7 +159,6 @@ def expand_column(column: np.ndarray, values_str: str) -> np.ndarray:
 def expand_dataset(x: np.ndarray, variable_descriptions: dict[str, dict[str, str]]) -> np.ndarray:
     """
     Expand all columns of x using variable_descriptions order.
-
     Important: number of described variables must match x.shape[1].
     """
     x = np.asarray(x)
@@ -176,8 +175,14 @@ def expand_dataset(x: np.ndarray, variable_descriptions: dict[str, dict[str, str
     for idx, (_name, desc) in enumerate(variable_descriptions.items()):
         col = x[:, idx]
         values_str = desc.get("values", "")
-        expanded_columns.append(expand_column(col, values_str))
+        
+        # Expand the column
+        expanded_col = expand_column(col, values_str)
+        
+        # === FIX: Convert to float32 immediately to save RAM ===
+        expanded_columns.append(expanded_col.astype(np.float32))
 
+    # Now this stack operation will require half the memory
     return np.hstack(expanded_columns)
 
 
